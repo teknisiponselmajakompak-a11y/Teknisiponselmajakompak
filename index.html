@@ -192,15 +192,7 @@ box-shadow:0 6px 20px rgba(0,0,0,0.3);
 🛒 <span id="jumlah">0</span>
 
 </div>
-
 <script>
-
-/* LINK GOOGLE SHEET */
-
-const sheetURL =
-"https://docs.google.com/spreadsheets/d/19AfachAS9ZyNuut61RB1wqyI_AI6BsmNT1SIWhmSIn8/gviz/tq?sheet=MEMBER";
-
-/* CONVERT LINK DRIVE */
 
 function convertDrive(url){
 
@@ -209,74 +201,16 @@ if(!url) return "";
 let id="";
 
 if(url.includes("id=")){
-
 id=url.split("id=")[1];
-
 }
 
 else if(url.includes("/d/")){
-
 id=url.split("/d/")[1].split("/")[0];
-
 }
 
-return "https://drive.google.com/uc?export=view&id="+id;
+return "https://drive.google.com/thumbnail?id="+id+"&sz=w1000";
 
 }
-
-/* LOAD DATA */
-
-fetch(sheetURL)
-
-.then(res => res.text())
-
-.then(data => {
-
-const json = JSON.parse(data.substring(47).slice(0,-2));
-
-let rows = json.table.rows;
-
-let html="";
-
-rows.forEach(r=>{
-
-let nama = r.c[1]?.v;
-
-let harga = r.c[7]?.v;
-
-let foto = convertDrive(r.c[9]?.v);
-
-if(!nama) return;
-
-html += `
-
-<div class="produk-card">
-
-<img src="${foto}" loading="lazy">
-
-<div class="produk-info">
-
-<h4>${nama}</h4>
-
-<div class="harga">Rp ${harga}</div>
-
-<button class="btn-cart">
-
-+ Keranjang
-
-</button>
-
-</div>
-
-</div>
-
-`;
-
-});
-
-document.getElementById("produk").innerHTML=html;
-
-});
 
 </script>
 
