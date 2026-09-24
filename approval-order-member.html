@@ -20,7 +20,7 @@ input,select{width:100%;padding:10px;border:2px solid #111827;border-radius:8px;
 .item-grid{display:grid;grid-template-columns:minmax(0,1.5fr) 100px 120px;gap:8px;align-items:end;margin-top:8px}.item-grid input,.item-grid select{box-shadow:none}.product-select{min-width:0}.product-search{margin-bottom:6px!important;box-shadow:none!important}.qty-label{font-size:10px;color:#64748b;font-weight:800;margin-bottom:4px}
 .summary{margin-top:10px;border:2px solid #111827;border-radius:9px;padding:10px;background:#fffbeb;font-size:12px;line-height:1.8}.summary b{font-size:13px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}.primary{background:#111827;color:#fff}.approve{background:#16a34a;color:#fff}.reject{background:#fee2e2;color:#991b1b}.wa{background:#22c55e;color:#fff}.secondary{background:#e5e7eb}
-.add-product{background:#ffc107;color:#111827}.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:10000;display:none;align-items:center;justify-content:center;padding:14px}.modal-backdrop.show{display:flex}.modal{width:min(560px,100%);background:#fff;border:2px solid #111827;border-radius:12px;padding:15px;box-shadow:5px 5px 0 #111827}.modal-title{font-size:16px;font-weight:900;margin-bottom:12px}.modal-grid{display:grid;grid-template-columns:1fr 110px;gap:10px}.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}.modal-actions .btn{min-width:110px}.empty{text-align:center;padding:28px;color:#64748b;font-size:12px}
+.empty{text-align:center;padding:28px;color:#64748b;font-size:12px}
 body.dark{background:#0b1220;color:#e5e7eb}body.dark .card,body.dark .order,body.dark .item{background:#111827;color:#e5e7eb;border-color:#475569}body.dark .order-head{background:#0f172a;border-color:#475569}body.dark .title{border-color:#475569}body.dark label{color:#9ca3af}body.dark input,body.dark select{background:#0f172a;color:#fff;border-color:#475569}body.dark .summary{background:#1c1917;border-color:#475569}body.dark .meta b{color:#fff}body.dark .stockline{color:#94a3b8}
 @media(max-width:800px){.filters{grid-template-columns:1fr}.item-grid{grid-template-columns:1fr 100px}.item-grid>div:first-child{grid-column:1/-1}}
 @media(max-width:650px){header{height:68px}.head h1{font-size:16px}main{padding-top:80px}.refresh{padding:8px}.order-head{flex-direction:column}.actions .btn{flex:1;min-width:120px}}
@@ -32,7 +32,7 @@ body.dark{background:#0b1220;color:#e5e7eb}body.dark .card,body.dark .order,body
 <div class="hi"><h1>Approval Member</h1><span id="email" class="email">-</span></div>
 <div class="acts"><button class="btn refresh" onclick="location.reload()">↻ Refresh</button><button id="dark" class="btn dark">🌙</button></div>
 </div></header>
-<div id="addProductModal" class="modal-backdrop"><div class="modal"><div class="modal-title">➕ Tambah Produk ke Pesanan</div><div class="notice">Produk langsung disimpan ke <b>penjualan.items</b>. Status tetap Menunggu Approval dan stok belum dikurangi.</div><label>PRODUK</label><input id="addProductSearch" class="product-search" type="search" placeholder="Cari nama / kode / brand..."><select id="addProductSelect"><option value="">-- pilih produk --</option></select><div class="modal-grid" style="margin-top:10px"><div><label>QTY</label><input id="addProductQty" type="number" min="1" value="1"></div><div><label>HARGA/PCS</label><input id="addProductPrice" type="number" min="0" value="0"></div></div><div id="addProductInfo" class="stockline" style="margin-top:8px"></div><div class="modal-actions"><button class="btn secondary" type="button" onclick="closeAddProduct()">Batal</button><button class="btn add-product" type="button" onclick="saveAddedProduct()">💾 Tambahkan</button></div></div></div><main>
+<main>
 <div id="notice" class="notice">Menunggu akun...</div>
 <div class="card"><div class="title">Klarifikasi Pesanan Member</div>
 <div class="filters">
@@ -155,7 +155,7 @@ function renderOrder(r){
  <div class="summary" id="sum_${r.id}">Menghitung...</div>
  <div class="actions">
  ${st==="menunggu_approval"?`<button class="btn approve" onclick="approveOrder('${r.id}')">✅ Setujui & Buat Order</button><button class="btn reject" onclick="rejectOrder('${r.id}')">❌ Tolak</button>`:""}
- <button class="btn add-product" onclick="openAddProduct('${r.id}')">➕ Tambah Produk</button><button class="btn wa" onclick="sendWA('${r.id}')">📲 Kirim WA Member</button>
+ <button class="btn wa" onclick="sendWA('${r.id}')">📲 Kirim WA Member</button>
  </div></div></div>`;
 }
 function recalcOrder(id){
@@ -220,37 +220,6 @@ function applyProductChange(el){
   item.querySelector(".stockline").innerHTML=`Kode: ${esc(stockCode(p)||"-")} • Pesanan: <b>${old?.qty||1}</b> pcs`;
   recalcOrder(id);checkStock(id);
 }
-let addProductOrderId="";
-function renderAddProductOptions(key=""){
- const q=String(key||"").trim().toLowerCase(),sel=$("addProductSelect");
- const list=stockCatalog.filter(p=>String(p.ownerUid||p.ownerId||"")===ownerUid).filter(p=>!q||`${stockName(p)} ${stockCode(p)} ${p.brand||""} ${p.tipe||""} ${p.merk||""}`.toLowerCase().includes(q));
- sel.innerHTML='<option value="">-- pilih produk --</option>'+list.map(p=>`<option value="${esc(p.id)}">${esc(stockName(p))}${stockCode(p)?` • ${esc(stockCode(p))}`:""}${stockPrice(p)?` • ${rp(stockPrice(p))}`:""}</option>`).join("");
-}
-function showAddProductInfo(){
- const p=stockCatalog.find(x=>String(x.id)===String($("addProductSelect").value));
- if(!p){$("addProductInfo").textContent="";return}
- $("addProductPrice").value=stockPrice(p); const st=Number(p.sisa??p.stok??0)||0;
- $("addProductQty").max=st;
- $("addProductInfo").innerHTML=`Stok tersedia: <b>${st}</b> pcs${p.supplier||p.pemasok||p.vendor?` • Supplier: <b>${esc(p.supplier||p.pemasok||p.vendor)}</b>`:""}`;
-}
-window.openAddProduct=id=>{addProductOrderId=id;$("addProductSearch").value="";$("addProductQty").value=1;$("addProductPrice").value=0;renderAddProductOptions();$("addProductModal").classList.add("show")};
-window.closeAddProduct=()=>{addProductOrderId="";$("addProductModal").classList.remove("show")};
-window.saveAddedProduct=async()=>{
- const id=addProductOrderId,p=stockCatalog.find(x=>String(x.id)===String($("addProductSelect").value)),qty=Math.max(0,Number($("addProductQty").value)||0),harga=Math.max(0,Number($("addProductPrice").value)||0);
- if(!id)return msg("Pesanan tidak ditemukan.","err"); if(!p)return msg("Pilih produk terlebih dahulu.","err"); if(qty<1)return msg("QTY minimal 1.","err");
- const stock=Number(p.sisa??p.stok??0)||0;if(qty>stock)return msg(`Stok ${stock} pcs, tidak cukup untuk qty ${qty}.`,"err");
- try{msg("Menyimpan produk tambahan...");const ref=doc(db,"penjualan",id);
-  await runTransaction(db,async tx=>{const snap=await tx.get(ref);if(!snap.exists())throw Error("Pesanan tidak ditemukan.");const d=snap.data()||{};
-   if(String(d.ownerUid||d.ownerId||"")!==ownerUid)throw Error("Pesanan bukan milik akun ini.");
-   if(String(d.status||"menunggu_approval")!=="menunggu_approval")throw Error("Pesanan sudah tidak menunggu approval.");
-   const items=Array.isArray(d.items)?d.items:(Array.isArray(d.produkList)?d.produkList:[]);
-   const item={approvalItemId:`ADD-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,tambahanApproval:true,produkId:p.id,nama:stockName(p),kode:stockCode(p),namaProduk:stockName(p),kodeProduk:stockCode(p),brand:p.brand||"",tipe:p.tipe||"",merk:p.merk||"",supplier:p.supplier||p.pemasok||p.vendor||"",qty,jumlah:qty,harga,hargaJual:harga,hargaDasar:Number(p.hargaDasar??0)||0,hargaTempo:Number(p.hargaTempo??0)||0,hargaCash:Number(p.hargaCash??0)||0,modalSatuan:stockModal(p),diskon:0,approvedQty:qty,stokTersedia:stock};
-   tx.update(ref,{items:[...items,item],status:"menunggu_approval",approvalStatus:"menunggu_approval",updatedAt:serverTimestamp()});
-  });closeAddProduct();await load();msg("Produk baru berhasil ditambahkan. Stok belum dikurangi.","ok");
- }catch(e){console.error(e);msg("Gagal menambah produk: "+(e.message||e),"err")}
-};
-$("addProductSearch").addEventListener("input",e=>renderAddProductOptions(e.target.value));
-$("addProductSelect").addEventListener("change",showAddProductInfo);
 window.approveOrder=async id=>{
  const r=rows.find(x=>x.id===id);if(!r)return;
  const card=document.querySelector(`[data-id="${CSS.escape(id)}"]`);const original=normalizeItems(r);const approved=original.map((x,i)=>{
