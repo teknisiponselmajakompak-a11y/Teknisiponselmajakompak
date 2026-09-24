@@ -1,2 +1,1 @@
-# Teknisiponselmajakompak
-Website toko online
+Teknisi Ponsel Maja
