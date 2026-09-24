@@ -98,12 +98,12 @@ body.dark .employee-btn.active{background:#ffc107;color:#111827}
 <script type="module">
 import{initializeApp}from"https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
 import{getAuth,onAuthStateChanged}from"https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
-import{getFirestore,collection,query,where,getDocs,getDoc,doc,runTransaction,serverTimestamp,addDoc,increment,deleteDoc}from"https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+import{getFirestore,collection,query,where,getDocs,getDoc,doc,runTransaction,serverTimestamp,addDoc,increment,deleteDoc,updateDoc}from"https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
 
 const cfg={apiKey:"AIzaSyC_PcarMTT5Un7qfSLzf92o5OGn5rginsI",authDomain:"fixzy-update.firebaseapp.com",projectId:"fixzy-update",storageBucket:"fixzy-update.firebasestorage.app",messagingSenderId:"995892519622",appId:"1:995892519622:web:fa41047944d8e5b35d6dc7"};
 const app=initializeApp(cfg),auth=getAuth(app),db=getFirestore(app);
 
-let uid="",ownerUid="",profile={},role="",rows=[],approvedRows=[],ready=false,stockCatalog=[],sheetLinks=[],sheetCache=null,cicilanRequests=[],employees=[],selectedEmployee=null,loginHandledUid="";
+let uid="",ownerUid="",profile={},role="",rows=[],approvedRows=[],ready=false,stockCatalog=[],sheetLinks=[],sheetCache=null,cicilanRequests=[],employees=[],selectedEmployeeState=null,loginHandledUid="";
 
 const $=id=>document.getElementById(id),rp=n=>"Rp "+(Number(n)||0).toLocaleString("id-ID"),esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const waNum=v=>{let s=String(v||"").replace(/\D/g,"");if(s.startsWith("0"))s="62"+s.slice(1);else if(s.startsWith("8"))s="62"+s;else if(!s.startsWith("62"))s="62"+s;return s};
@@ -125,6 +125,261 @@ function employeeUid(r){
  const e=r?.employee;
  if(e&&typeof e==="object") return String(e.uid??e.userUid??e.id??"").trim();
  return String(r?.karyawanUid??r?.employeeUid??r?.employeeId??"").trim();
+}
+
+
+function num(v){const n=Number(v);return Number.isFinite(n)?n:0}
+function firstPositive(...vals){for(const v of vals){const n=Number(v);if(Number.isFinite(n)&&n>0)return n}return 0}
+function member(x){
+ const m=x?.member||x?.pelanggan||{};
+ return {
+  uid:String(m.uid??m.userId??x?.memberUid??x?.memberId??"").trim(),
+  nama:String(m.nama??m.name??x?.memberNama??x?.namaMember??x?.pelangganNama??"Member").trim(),
+  kode:String(m.kode??m.memberId??x?.memberId??"").trim(),
+  wa:String(m.wa??m.noWa??m.nomorWa??x?.memberWa??"").trim(),
+  tabunganPerPcs:firstPositive(m.tabunganPerPcs,m.tabunganMember,m.tabunganMemberPerPcs,x?.tabunganPerPcs,x?.tabunganMember),
+  kasBulanan:firstPositive(m.kasBulanan,m.uangKasBulanan,x?.kasBulanan,x?.uangKasBulanan)
+ };
+}
+function status(x){return String(x?.status??x?.approvalStatus??"menunggu_approval").trim().toLowerCase()}
+function isCash(x){
+ return String(x?.jenisHarga??"").toLowerCase()==="cash" ||
+        String(x?.tipeTransaksi??"").toLowerCase()==="member_cash" ||
+        String(x?.tipeOrder??"").toLowerCase()==="member_cash";
+}
+function stockName(p){return String(p?.nama??p?.namaProduk??p?.name??"-").trim()}
+function stockCode(p){return String(p?.kode??p?.kodeProduk??p?.code??"").trim()}
+function stockModal(p){return Number(p?.modalSatuan??p?.modal??p?.hargaModal??0)||0}
+
+function itemsOf(x){
+ const a=Array.isArray(x?.items)?x.items:(Array.isArray(x?.produkList)?x.produkList:[]);
+ return a.map(i=>{
+  const qty=Math.max(0,Number(i?.qty??i?.jumlah??i?.quantity??1)||0);
+  const harga=Number(i?.harga??i?.hargaJual??i?.price??0)||0;
+  const up=Number(i?.upPengelolaPerPcs??i?.upPengelola??x?.upPengelolaPerPcs??x?.upPengelola??0)||0;
+  const tab=Number(i?.tabunganPerPcs??i?.tabungan??x?.tabunganPerPcs??x?.tabunganMember??0)||0;
+  const base=Number(i?.hargaDasar??i?.hargaAwal??0)||0;
+  const diskon=Math.max(0,Number(i?.diskon??i?.discount??0)||0);
+  const total=Number(i?.total??i?.jumlahHarga??(harga*qty-diskon))||0;
+  return {
+   ...i,
+   nama:stockName(i),kode:stockCode(i),qty,harga,
+   hargaDasar:base,hargaAwal:base,diskon,total,
+   upPengelolaPerPcs:up,upPengelola:up,
+   tabunganPerPcs:tab,tabungan:tab,
+   modalSatuan:stockModal(i),
+   approvedQty:Number(i?.approvedQty??qty)||0,
+   stokTersedia:Number(i?.stokTersedia??i?.stock??i?.stok??0)||0
+  };
+ });
+}
+function normalizeItems(x){return itemsOf(x)}
+
+function deriveBreakdown(d, sourceItems, memberDoc={}){
+ const cash=isCash(d);
+ const memberData=member(d);
+ const memberTab=firstPositive(
+  d?.tabunganPerPcs,d?.tabunganMember,d?.tabunganMemberPerPcs,
+  memberData.tabunganPerPcs,memberDoc?.tabunganPerPcs,memberDoc?.tabunganMember,memberDoc?.tabunganMemberPerPcs
+ );
+ const ownerUp=firstPositive(
+  d?.upPengelolaPerPcs,d?.upPengelola,
+  profile?.upPengelolaPerPcs,profile?.upPengelola,profile?.up,memberDoc?.upPengelolaPerPcs
+ );
+ const kas=firstPositive(
+  d?.kasBulanan,d?.uangKasBulanan,d?.kasBulananMember,d?.uangKas,
+  memberData.kasBulanan,memberDoc?.kasBulanan,memberDoc?.uangKasBulanan,profile?.kasBulananDefault,profile?.kasBulanan,profile?.uangKasBulanan
+ );
+
+ const items=sourceItems.map(raw=>{
+  const qty=Math.max(0,Number(raw?.approvedQty??raw?.qty??raw?.jumlah??1)||0);
+  const diskon=Math.max(0,Number(raw?.diskon??raw?.discount??0)||0);
+  const tab=firstPositive(raw?.tabunganPerPcs,raw?.tabungan,memberTab);
+  const up=firstPositive(raw?.upPengelolaPerPcs,raw?.upPengelola,ownerUp);
+
+  let base=firstPositive(raw?.hargaDasar,raw?.hargaAwal);
+  if(!base){
+   base=cash
+    ? firstPositive(raw?.hargaCash,raw?.modalSatuan,raw?.modal)
+    : firstPositive(raw?.hargaTempo,raw?.hargaJual);
+  }
+
+  const finalPrice=Number(raw?.harga??raw?.hargaJual??0)||0;
+  // If the stored price is the combined member price and no clean base exists,
+  // split it mathematically so Base + Tabungan + UP = Harga Member.
+  if(!base && finalPrice>0) base=Math.max(0,finalPrice-tab-up);
+
+  const hargaMember=Math.max(0,finalPrice||base+tab+up);
+  // Discount belongs to the pure goods value, keeping the three components
+  // independently readable and preserving:
+  // nilai barang + tabungan + UP = total item after discount.
+  const nilaiBarang=Math.max(0,base*qty-diskon);
+  const totalTabungan=tab*qty;
+  const totalUP=up*qty;
+  const total=Math.max(0,hargaMember*qty-diskon);
+
+  return {
+   ...raw,
+   produkId:raw?.produkId??raw?.id??"",
+   nama:stockName(raw),kode:stockCode(raw),qty,approvedQty:qty,
+   hargaDasar:base,hargaAwal:base,nilaiBarang,
+   tabunganPerPcs:tab,totalTabunganMember:totalTabungan,totalTabungan:totalTabungan,
+   tambahanTabungan:totalTabungan,
+   upPengelolaPerPcs:up,totalUPPengelola:totalUP,totalUpPengelola:totalUP,
+   tambahanUpPengelola:totalUP,
+   hargaMemberPerPcs:hargaMember,harga:hargaMember,
+   diskon,total,totalTagihanItem:total,
+   modalSatuan:stockModal(raw)
+  };
+ });
+
+ const totalNilaiBarang=items.reduce((a,x)=>a+Number(x.nilaiBarang||0),0);
+ const totalTabunganMember=items.reduce((a,x)=>a+Number(x.totalTabunganMember||0),0);
+ const totalUPPengelola=items.reduce((a,x)=>a+Number(x.totalUPPengelola||0),0);
+ return {items,totalNilaiBarang,totalTabunganMember,totalUPPengelola,kasBulanan:kas,
+         tabunganPerPcs:memberTab,upPengelolaPerPcs:ownerUp};
+}
+function rincianOrder(d,its){return deriveBreakdown(d,its,{} )}
+
+function finalProductPrice(r,p,old={}){
+ const cash=isCash(r);
+ const tab=firstPositive(old?.tabunganPerPcs,old?.tabungan,r?.tabunganPerPcs,r?.tabunganMember);
+ const up=firstPositive(old?.upPengelolaPerPcs,old?.upPengelola,r?.upPengelolaPerPcs,r?.upPengelola,profile?.upPengelolaPerPcs,profile?.upPengelola,profile?.up);
+ const base=firstPositive(
+  p?.hargaDasar,p?.hargaAwal,
+  cash?p?.hargaCash:p?.hargaTempo,
+  cash?p?.modal:p?.jual,
+  old?.hargaDasar,old?.hargaAwal
+ );
+ return {base,tab,up,final:Math.max(0,base+tab+up)};
+}
+function recalcOrder(id){return id}
+function checkStock(id){return id}
+function getSpreadsheetLinks(){
+ const raw=profile?.spreadsheetLinks??profile?.sheetLinks??profile?.linksSpreadsheet??profile?.urlSpreadsheet??[];
+ if(Array.isArray(raw))return raw.map(x=>typeof x==="string"?x:(x?.url??x?.link??"")).filter(Boolean);
+ if(typeof raw==="string")return raw.split(/[\n,]+/).map(x=>x.trim()).filter(Boolean);
+ return [];
+}
+async function readSheet(){return []}
+
+async function loadOrders(){
+ rows=[];
+ if(!ownerUid)return;
+ const map=new Map();
+ for(const field of ["ownerUid","ownerId"]){
+  try{
+   const snap=await getDocs(query(collection(db,"penjualan"),where(field,"==",ownerUid)));
+   snap.forEach(d=>{
+    const x={id:d.id,...d.data()};
+    if(["menunggu_approval","pending","menunggu_approval_member"].includes(status(x)))map.set(d.id,x);
+   });
+  }catch(e){console.warn("Load penjualan "+field,e?.message||e)}
+ }
+ rows=[...map.values()].sort((a,b)=>{
+  const av=a.createdAt?.toMillis?a.createdAt.toMillis():new Date(a.createdAt||a.tanggal||0).getTime();
+  const bv=b.createdAt?.toMillis?b.createdAt.toMillis():new Date(b.createdAt||b.tanggal||0).getTime();
+  return bv-av;
+ });
+ render();
+}
+async function loadHistory(){
+ approvedRows=[];
+ const map=new Map();
+ for(const field of ["ownerUid","ownerId"]){
+  try{
+   const snap=await getDocs(query(collection(db,"order_member"),where(field,"==",ownerUid)));
+   snap.forEach(d=>map.set(d.id,{id:d.id,...d.data()}));
+  }catch(e){console.warn("Load order_member "+field,e?.message||e)}
+ }
+ approvedRows=[...map.values()].filter(x=>!x.hiddenFromApprovalHistory);
+
+ // Repair only the separated accounting fields. Existing payment, status,
+ // tempo and due-date fields are intentionally left untouched.
+ for(const o of approvedRows){
+  try{
+   const sourceId=String(o.sourcePenjualanId||"").trim();
+   let source=o;
+   if(sourceId){
+    const ps=await getDoc(doc(db,"penjualan",sourceId));
+    if(ps.exists())source=ps.data()||o;
+   }
+   const memberUid=String(o.memberUid||o.memberId||o.member?.uid||o.member?.userId||source.memberUid||source.memberId||"").trim();
+   let memberDoc={};
+   if(memberUid){
+    const ms=await getDoc(doc(db,"users",memberUid));
+    if(ms.exists())memberDoc=ms.data()||{};
+   }
+   const rawItems=Array.isArray(o.items)&&o.items.length?o.items:(Array.isArray(source.items)?source.items:[]);
+   const b=deriveBreakdown({...source,...o},itemsOf({...source,items:rawItems}),memberDoc);
+   const patch={
+    totalNilaiBarang:b.totalNilaiBarang,
+    totalUPPengelola:b.totalUPPengelola,
+    totalUpPengelola:b.totalUPPengelola,
+    totalTabunganMember:b.totalTabunganMember,
+    totalTabungan:b.totalTabunganMember,
+    totalTabunganOrder:b.totalTabunganMember,
+    totalUpPengelolaOrder:b.totalUPPengelola,
+    tabunganPerPcs:b.tabunganPerPcs,
+    tabunganMember:b.tabunganPerPcs,
+    upPengelolaPerPcs:b.upPengelolaPerPcs,
+    kasBulanan:Number(o.kasBulanan??0)||b.kasBulanan,
+    uangKasBulanan:Number(o.uangKasBulanan??0)||b.kasBulanan,
+    items:b.items,
+    updatedAt:serverTimestamp()
+   };
+   const changed =
+    Number(o.totalNilaiBarang||0)!==b.totalNilaiBarang ||
+    Number(o.totalUPPengelola||0)!==b.totalUPPengelola ||
+    Number(o.totalTabunganMember||0)!==b.totalTabunganMember ||
+    Number(o.kasBulanan||0)!==Number(patch.kasBulanan||0) ||
+    JSON.stringify(o.items||[])!==JSON.stringify(b.items||[]);
+   if(changed)await updateDoc(doc(db,"order_member",o.id),patch);
+   Object.assign(o,patch);
+  }catch(e){console.warn("Repair breakdown "+o.id,e?.message||e)}
+ }
+ renderApprovedHistory();
+}
+async function load(){await loadOrders();await loadHistory()}
+async function sendApprovedHistoryWA(id){const r=approvedRows.find(x=>x.id===id);if(r)sendWAData(r,"approved")}
+
+function renderOrder(o){
+ const m=member(o),items=itemsOf(o),total=Number(o.total??o.subtotal??items.reduce((a,x)=>a+x.total,0))||0;
+ const dp=Number(o.dp??o.uangMuka??0)||0,tempo=Number(o.tempoHari??0)||0,due=o.jatuhTempo||o.tanggalJatuhTempo||"-";
+ return `<div class="order" data-id="${esc(o.id)}">
+  <div class="order-head"><div><div class="order-title">${esc(o.nomorNota||o.id)}</div>
+   <div class="meta">Employee: <b>${esc(selectedEmployee()?.nama||employeeName(o)||"-")}</b> • Member: <b>${esc(m.nama)}</b></div></div>
+   <span class="badge">MENUNGGU APPROVAL</span></div>
+  <div class="order-body">
+   <div class="meta"><b>Order ID:</b> ${esc(o.id)}${m.kode?` • Kode Member: ${esc(m.kode)}`:""}</div>
+   <div class="items">${items.map((x,i)=>{
+    const qty=Number(x.qty)||0,stock=Number(x.stokTersedia||x.stock||0)||0;
+    const price=Number(x.harga)||0;
+    return `<div class="item" data-index="${i}" data-selected-product="${esc(x.produkId||"")}">
+      <div class="item-top"><div><div class="item-name">${i+1}. ${esc(x.nama)}</div>
+       <div class="stockline">Kode: ${esc(x.kode||"-")} • Harga dasar: ${rp(Number(x.hargaDasar||0))} • Tabungan: ${rp(Number(x.tabunganPerPcs||0))}/pcs • Pengelola: ${rp(Number(x.upPengelolaPerPcs||0))}/pcs</div></div>
+       <div class="stockline">${stock?`Stok: ${stock} pcs`:""}</div></div>
+      <div class="item-grid">
+       <div><input class="product-search" type="search" value="${esc(x.nama)}" placeholder="Cari pengganti..."><div class="product-results add-results"></div></div>
+       <div><div class="qty-label">QTY APPROVE</div><input class="approved" type="number" min="0" max="${Math.max(qty,stock)}" value="${qty}"></div>
+       <div><div class="qty-label">HARGA/PCS</div><input class="price" type="number" min="0" value="${price}"></div>
+      </div>
+      <div class="replacement-info stockline" style="margin-top:6px">Harga dasar + Tabungan + Pengelola = harga member</div>
+     </div>`;
+   }).join("")}</div>
+   <div class="order-edit-grid">
+    <div><label>TEMPO (HARI)</label><input class="tempo-edit" type="number" min="0" value="${tempo}"></div>
+    <div><label>JATUH TEMPO</label><input class="due-edit" type="date" value="${esc(due==="-"?"":due)}"></div>
+   </div>
+   <div class="summary">📦 Produk: <b>${items.reduce((a,x)=>a+(Number(x.qty)||0),0)} pcs</b><br>💰 Total: <b>${rp(total)}</b><br>💵 DP: <b>${rp(dp)}</b><br>📅 Jatuh tempo: <b>${esc(due)}</b></div>
+   <div class="actions">
+    <button class="btn approve" onclick="approveOrder('${esc(o.id)}')">✅ APPROVE</button>
+    <button class="btn reject" onclick="rejectOrder('${esc(o.id)}')">❌ TOLAK</button>
+    <button class="btn wa" onclick="sendWA('${esc(o.id)}')">📲 WA</button>
+    <button class="btn add-product" onclick="openAddProduct('${esc(o.id)}')">➕ PRODUK</button>
+   </div>
+  </div>
+ </div>`;
 }
 
 async function loadEmployees(){
@@ -300,119 +555,261 @@ window.returnOrderForRevision=async id=>{
 window.sendApprovedHistoryWA=id=>{const r=approvedRows.find(x=>x.id===id);if(!r)return;sendWAData(r,"approved")};
 
 window.approveOrder=async id=>{
- const r=rows.find(x=>x.id===id);if(!r)return;const card=document.querySelector(`[data-id="${CSS.escape(id)}"]`);if(!card)return;
- const original=normalizeItems(r),approved=original.map((x,i)=>{const el=card.querySelectorAll(".item")[i],selectedId=el.dataset.selectedProduct||x.produkId,p=stockCatalog.find(z=>String(z.id)===String(selectedId))||stockCatalog.find(z=>String(z.kode||z.kodeProduk)===String(x.kode)),q=Math.max(0,Math.min(x.qty,Number(el.querySelector(".approved").value)||0)),harga=Math.max(0,Number(el.querySelector(".price").value)||0);if(p)return{...x,...p,produkId:p.id,nama:stockName(p),kode:stockCode(p),harga,modalSatuan:stockModal(p),approvedQty:q};return{...x,approvedQty:q,harga}}).filter(x=>x.approvedQty>0);
+ const r=rows.find(x=>x.id===id);if(!r)return;
+ const card=document.querySelector(`[data-id="${CSS.escape(id)}"]`);if(!card)return;
+ const original=normalizeItems(r);
+ const approved=original.map((x,i)=>{
+  const el=card.querySelectorAll(".item")[i];if(!el)return null;
+  const selectedId=el.dataset.selectedProduct||x.produkId;
+  const p=stockCatalog.find(z=>String(z.id)===String(selectedId))||
+          stockCatalog.find(z=>String(z.kode||z.kodeProduk)===String(x.kode))||x;
+  const q=Math.max(0,Number(el.querySelector(".approved")?.value)||0);
+  const harga=Math.max(0,Number(el.querySelector(".price")?.value)||0);
+  return {...x,...p,produkId:p.produkId||p.id||x.produkId,nama:stockName(p)||x.nama,kode:stockCode(p)||x.kode,
+          harga:harga||Number(x.harga)||0,modalSatuan:stockModal(p)||Number(x.modalSatuan)||0,approvedQty:q};
+ }).filter(x=>x&&x.approvedQty>0);
  if(!approved.length)return msg("Minimal satu produk harus disetujui.","err");
- const tempoEdit=card.querySelector(".tempo-edit"),dueEdit=card.querySelector(".due-edit"),revisedTempo=Math.max(0,Number(tempoEdit?.value??r.tempoHari??0)||0),revisedDue=dueEdit?.value||r.jatuhTempo||r.tanggalJatuhTempo||"",ref=doc(db,"penjualan",id);
+
+ const tempoEdit=card.querySelector(".tempo-edit"),dueEdit=card.querySelector(".due-edit");
+ const revisedTempo=Math.max(0,Number(tempoEdit?.value??r.tempoHari??0)||0);
+ const revisedDue=dueEdit?.value||r.jatuhTempo||r.tanggalJatuhTempo||"";
+ const ref=doc(db,"penjualan",id);
+
  try{
   msg("Memeriksa stok dan memproses approval...");
   const result=await runTransaction(db,async tx=>{
-   const fresh=await tx.get(ref);if(!fresh.exists())throw Error("Pesanan tidak ditemukan.");
-   const freshData=fresh.data()||{};if(String(freshData.ownerUid||freshData.ownerId||"")!==ownerUid)throw Error("Pesanan bukan milik akun ini.");if(String(freshData.status||"")!=="menunggu_approval")throw Error("Pesanan sudah diproses.");
-   const existingOrderId=String(freshData.orderMemberId||"").trim(),orderRef=existingOrderId?doc(db,"order_member",existingOrderId):doc(collection(db,"order_member")),existingSnap=existingOrderId?await tx.get(orderRef):null,oldOrder=existingSnap?.exists()?existingSnap.data()||{}:null;
-   if(existingOrderId&&!oldOrder)throw Error("Order Member lama tidak ditemukan. Approval ulang dibatalkan agar tidak membuat duplikat.");
-   for(const x of approved){const p=stockCatalog.find(z=>String(z.id)===String(x.produkId))||stockCatalog.find(z=>String(z.kode||z.kodeProduk)===String(x.kode));if(!p)throw Error(`Produk ${x.nama} tidak ditemukan di Spreadsheet Owner.`);const st=Number(p.stock)||0;if(st<x.approvedQty)throw Error(`Stok Spreadsheet ${x.nama} hanya ${st}, disetujui ${x.approvedQty}.`)}
-   const cash=String(freshData.jenisHarga||"").toLowerCase()==="cash"||String(freshData.tipeTransaksi||"").toLowerCase()==="member_cash";
-   const itemsFinal=approved.map(x=>{const up=Number(x.upPengelolaPerPcs??freshData.upPengelolaPerPcs??freshData.upPengelola??0)||0,tab=Number(x.tabunganPerPcs??freshData.tabunganPerPcs??freshData.tabunganMember??0)||0,base=Number(x.hargaDasar??(cash?x.hargaCash:x.hargaTempo)??0)||0,qty=Math.max(0,Number(x.approvedQty)||0),finalPrice=Math.max(0,Number(x.harga)||0),diskon=Math.min(Number(x.diskon)||0,finalPrice*qty);return{produkId:x.produkId,nama:x.nama,kode:x.kode,qty,approvedQty:qty,hargaDasar:base,nilaiBarang:base*qty,upPengelolaPerPcs:up,totalUPPengelola:up*qty,tabunganPerPcs:tab,totalTabunganMember:tab*qty,hargaMemberPerPcs:finalPrice,harga:finalPrice,hargaTempo:x.hargaTempo??0,hargaCash:x.hargaCash??0,hargaJual:finalPrice,diskon,modalSatuan:x.modalSatuan||0,totalTagihanItem:Math.max(0,finalPrice*qty-diskon),total:Math.max(0,finalPrice*qty-diskon)}});
-   const total=itemsFinal.reduce((a,x)=>a+x.total,0),totalNilaiBarang=itemsFinal.reduce((a,x)=>a+x.nilaiBarang,0),totalUP=itemsFinal.reduce((a,x)=>a+x.totalUPPengelola,0),totalTabungan=itemsFinal.reduce((a,x)=>a+x.totalTabunganMember,0),kasNominal=Number(freshData.kasBulanan??freshData.uangKasBulanan??0)||0,bulan=String(freshData.tanggal||"").slice(0,7),memberUid=String(freshData.memberUid||freshData.member?.uid||freshData.member?.memberUid||""),wasRevision=Boolean(oldOrder?.revisionRequired)||String(oldOrder?.status||"")==="revisi",existingCycle=Math.max(0,Number(oldOrder?.kasApprovalCycle??0)||0),kasCycle=existingOrderId&&wasRevision?existingCycle+1:existingCycle,kasRef=(kasNominal&&bulan&&memberUid)?doc(db,"saldo_owner_kas_bulanan",ownerUid+"_"+memberUid+"_"+bulan+"_"+String(kasCycle)):null,kasSnap=kasRef?await tx.get(kasRef):null,dp=cash?total:Math.min(Number(freshData.dp||freshData.uangMuka||0),total),sisa=cash?0:Math.max(0,total-dp);
-   const saldoRef=doc(db,"saldo_owner",ownerUid),oldPostedUP=wasRevision?0:(Number(oldOrder?.totalUPPengelola||0)||0),deltaUP=totalUP-oldPostedUP,shouldPostKas=Boolean(kasRef&&kasSnap&&!kasSnap.exists()),saldoPatch={updatedAt:serverTimestamp()};if(deltaUP)saldoPatch.saldoPengelola=increment(deltaUP);if(shouldPostKas)saldoPatch.saldoKas=increment(kasNominal);
-   const order={ownerUid,uid:ownerUid,createdBy:uid,sourcePenjualanId:id,nomorNota:freshData.nomorNota||id,tipeOrder:cash?"member_cash":"member_tempo",status:"order_member",revisionRequired:false,member:freshData.member||freshData.pelanggan||{},items:itemsFinal,subtotal:total,diskon:itemsFinal.reduce((a,x)=>a+x.diskon,0),total,totalBayar:total,totalTagihanMember:total,totalNilaiBarang,dp:cash?total:dp,uangMuka:cash?total:dp,sisa:cash?0:sisa,sisaBayar:cash?0:sisa,piutang:cash?0:sisa,pendapatan:cash?total:dp,tabunganPerPcs:Number(freshData.tabunganPerPcs??freshData.tabunganMember??0)||0,upPengelolaPerPcs:Number(freshData.upPengelolaPerPcs??freshData.upPengelola??0)||0,kasBulanan:shouldPostKas?kasNominal:0,totalTabunganMember:totalTabungan,totalUPPengelola:totalUP,kasApprovalCycle:kasCycle,jenisHarga:cash?"cash":"tempo",tempoHari:cash?0:revisedTempo,jatuhTempo:cash?"":revisedDue,approvedAt:serverTimestamp(),updatedAt:serverTimestamp(),stokDikurangi:true};
+   const fresh=await tx.get(ref);
+   if(!fresh.exists())throw Error("Pesanan tidak ditemukan.");
+   const freshData=fresh.data()||{};
+   if(String(freshData.ownerUid||freshData.ownerId||"")!==ownerUid)throw Error("Pesanan bukan milik akun ini.");
+   if(status(freshData)!=="menunggu_approval")throw Error("Pesanan sudah diproses.");
+
+   const existingOrderId=String(freshData.orderMemberId||"").trim();
+   const orderRef=existingOrderId?doc(db,"order_member",existingOrderId):doc(collection(db,"order_member"));
+   const existingSnap=existingOrderId?await tx.get(orderRef):null;
+   const oldOrder=existingSnap?.exists()?existingSnap.data()||{}:null;
+   if(existingOrderId&&!oldOrder)throw Error("Order Member lama tidak ditemukan. Approval ulang dibatalkan.");
+
+   // Baca profil Member SEBELUM write agar tarif Tabungan/Kas lama yang
+   // hilang dari dokumen penjualan tetap dapat dipulihkan.
+   const memberUid=String(freshData.memberUid||freshData.memberId||freshData.member?.uid||freshData.member?.userId||freshData.pelanggan?.uid||"").trim();
+   let memberDoc={};
+   if(memberUid){
+    const ms=await tx.get(doc(db,"users",memberUid));
+    if(ms.exists())memberDoc=ms.data()||{};
+   }
+
+   const cash=isCash(freshData);
+   const sourceForBreakdown={...freshData,...r};
+   const rawForCalc=approved.map(x=>({...x}));
+   const derived=deriveBreakdown(sourceForBreakdown,rawForCalc,memberDoc);
+
+   // Jika harga approval diedit, hitung ulang nilai barang dari harga final
+   // supaya: Nilai Barang + Tabungan + UP = Total item sebelum diskon.
+   const itemsFinal=approved.map((x,idx)=>{
+    const bx=derived.items[idx]||{};
+    const qty=Math.max(0,Number(x.approvedQty)||0);
+    const tab=Number(bx.tabunganPerPcs)||0;
+    const up=Number(bx.upPengelolaPerPcs)||0;
+    const finalPrice=Math.max(0,Number(x.harga)||0);
+    const baseFromStored=Number(bx.hargaDasar)||0;
+    const base=Math.max(0,finalPrice-up-tab||baseFromStored);
+    const diskon=Math.min(Math.max(0,Number(x.diskon)||0),finalPrice*qty);
+    return {
+     ...x,
+     produkId:x.produkId,nama:x.nama,kode:x.kode,qty,approvedQty:qty,
+     hargaDasar:base,hargaAwal:base,nilaiBarang:Math.max(0,base*qty-diskon),
+     tabunganPerPcs:tab,totalTabunganMember:tab*qty,totalTabungan:tab*qty,tambahanTabungan:tab*qty,
+     upPengelolaPerPcs:up,totalUPPengelola:up*qty,totalUpPengelola:up*qty,tambahanUpPengelola:up*qty,
+     hargaMemberPerPcs:finalPrice,harga:finalPrice,
+     hargaTempo:Number(x.hargaTempo??0)||0,hargaCash:Number(x.hargaCash??0)||0,hargaJual:finalPrice,
+     diskon,totalTagihanItem:Math.max(0,finalPrice*qty-diskon),total:Math.max(0,finalPrice*qty-diskon),
+     modalSatuan:stockModal(x)
+    };
+   });
+
+   const total=itemsFinal.reduce((a,x)=>a+x.total,0);
+   const totalNilaiBarang=itemsFinal.reduce((a,x)=>a+x.nilaiBarang,0);
+   const totalUP=itemsFinal.reduce((a,x)=>a+x.totalUPPengelola,0);
+   const totalTabungan=itemsFinal.reduce((a,x)=>a+x.totalTabunganMember,0);
+   const memberData=freshData.member||freshData.pelanggan||{};
+   const tabunganPerPcs=firstPositive(
+     freshData.tabunganPerPcs,freshData.tabunganMember,memberData.tabunganPerPcs,memberDoc.tabunganPerPcs,memberDoc.tabunganMember
+   );
+   const upPengelolaPerPcs=firstPositive(
+     freshData.upPengelolaPerPcs,freshData.upPengelola,profile?.upPengelolaPerPcs,profile?.upPengelola,profile?.up
+   );
+   const kasNominal=firstPositive(
+     freshData.kasBulanan,freshData.uangKasBulanan,memberData.kasBulanan,memberDoc.kasBulanan,memberDoc.uangKasBulanan,profile?.kasBulananDefault,profile?.kasBulanan,profile?.uangKasBulanan
+   );
+
+   const dp=cash?total:Math.min(Number(freshData.dp||freshData.uangMuka||0),total);
+   const sisa=cash?0:Math.max(0,total-dp);
+   const wasRevision=Boolean(oldOrder?.revisionRequired)||String(oldOrder?.status||"")==="revisi";
+   const existingCycle=Math.max(0,Number(oldOrder?.kasApprovalCycle??0)||0);
+   const kasCycle=existingOrderId&&wasRevision?existingCycle+1:existingCycle;
+   const bulan=String(freshData.tanggal||"").slice(0,7);
+   const kasRef=(kasNominal&&bulan&&memberUid)?doc(db,"saldo_owner_kas_bulanan",ownerUid+"_"+memberUid+"_"+bulan+"_"+String(kasCycle)):null;
+   const kasSnap=kasRef?await tx.get(kasRef):null;
+   const shouldPostKas=Boolean(kasRef&&kasSnap&&!kasSnap.exists());
+
+   const saldoRef=doc(db,"saldo_owner",ownerUid);
+   const oldPostedUP=wasRevision?0:(Number(oldOrder?.totalUPPengelola||0)||0);
+   const deltaUP=totalUP-oldPostedUP;
+   const saldoPatch={updatedAt:serverTimestamp()};
+   if(deltaUP)saldoPatch.saldoPengelola=increment(deltaUP);
+   if(shouldPostKas)saldoPatch.saldoKas=increment(kasNominal);
+
+   const order={
+    ownerUid,uid:ownerUid,createdBy:uid,sourcePenjualanId:id,
+    nomorNota:freshData.nomorNota||id,
+    tipeOrder:cash?"member_cash":"member_tempo",
+    jenisHarga:cash?"cash":"tempo",
+    status:"order_member",approvalStatus:"approved",revisionRequired:false,
+    approvalEmployeeUid:selectedEmployee()?.uid||"",approvalEmployeeName:selectedEmployee()?.nama||"",
+    employeeUid:selectedEmployee()?.uid||"",employeeName:selectedEmployee()?.nama||"",
+    member:{...memberData,uid:memberUid||memberData.uid||"",userId:memberUid||memberData.userId||""},
+    items:itemsFinal,
+    subtotal:total,diskon:itemsFinal.reduce((a,x)=>a+x.diskon,0),total,totalBayar:total,totalTagihanMember:total,
+    totalNilaiBarang,
+    totalUPPengelola:totalUP,totalUpPengelola:totalUP,totalUpPengelolaOrder:totalUP,
+    totalTabunganMember:totalTabungan,totalTabungan:totalTabungan,totalTabunganOrder:totalTabungan,
+    tabunganPerPcs,tabunganMember:tabunganPerPcs,
+    upPengelolaPerPcs,
+    kasBulanan:shouldPostKas?kasNominal:0,
+    uangKasBulanan:shouldPostKas?kasNominal:0,
+    kasApprovalCycle:kasCycle,
+    dp:cash?total:dp,uangMuka:cash?total:dp,
+    sisa:cash?0:sisa,sisaBayar:cash?0:sisa,piutang:cash?0:sisa,
+    pendapatan:cash?total:dp,
+    tempoHari:cash?0:revisedTempo,
+    jatuhTempo:cash?"":revisedDue,
+    tanggal:freshData.tanggal||"",
+    tanggalJatuhTempo:cash?"":revisedDue,
+    approvedAt:serverTimestamp(),updatedAt:serverTimestamp(),stokDikurangi:true
+   };
+
    if(existingOrderId)tx.update(orderRef,order);else tx.set(orderRef,order);
    if(shouldPostKas)tx.set(kasRef,{ownerUid,memberUid,bulan,nominal:kasNominal,sumber:"approval-order-member",orderMemberId:orderRef.id,sourcePenjualanId:id,createdAt:serverTimestamp()});
    if(Object.keys(saldoPatch).length>1)tx.set(saldoRef,saldoPatch,{merge:true});
-   tx.update(ref,{status:"approved",approvalStatus:"approved",approvedAt:serverTimestamp(),approvedBy:uid,approvedItems:itemsFinal,items:itemsFinal,approvedTotal:total,approvedDp:dp,approvedSisa:sisa,approvedPiutang:sisa,approvedPendapatan:cash?total:0,orderMemberId:orderRef.id,revisionRequired:false,revisionApprovedAt:serverTimestamp(),revisionApprovedBy:uid,updatedAt:serverTimestamp()});
+
+   tx.update(ref,{
+    status:"approved",approvalStatus:"approved",approvedAt:serverTimestamp(),approvedBy:uid,
+    approvedItems:itemsFinal,items:itemsFinal,approvedTotal:total,approvedDp:dp,approvedSisa:sisa,approvedPiutang:sisa,
+    orderMemberId:orderRef.id,revisionRequired:false,revisionApprovedAt:serverTimestamp(),revisionApprovedBy:uid,
+    updatedAt:serverTimestamp()
+   });
    return{orderId:orderRef.id,order};
   });
-  msg(result.orderId===r.orderMemberId?"Approval ulang berhasil. Order Member lama diperbarui, tidak dibuat baru.":"Order berhasil di-approve dan masuk Data Order Member.","ok");await load();sendWAData(result.order,"approved");
+
+  msg(result.orderId===r.orderMemberId?"Approval ulang berhasil. Rincian order_member diperbarui.":"Order berhasil di-approve dan masuk Data Order Member.","ok");
+  await load();
+  sendWAData(result.order,"approved");
  }catch(e){console.error(e);msg("Gagal approval: "+(e?.message||e),"err")}
 };
 
-async function loadCicilanRequests(){
- cicilanRequests=[];if(!ownerUid)return;const map=new Map();
- for(const field of ["ownerUid","ownerId"]){try{const ss=await getDocs(query(collection(db,"tabungan_member"),where(field,"==",ownerUid)));ss.forEach(d=>map.set(d.id,{id:d.id,...d.data()}))}catch(e){console.warn("Query request cicilan "+field+" dilewati:",e?.message||e)}}
- cicilanRequests=[...map.values()].filter(r=>String(r.jenis||r.tipe||"").toLowerCase()==="cicilan_tagihan").filter(r=>String(r.ownerUid||r.ownerId||"").trim()===ownerUid).filter(r=>String(r.status||"pending").toLowerCase()==="pending").sort((a,b)=>{const ta=a.requestedAt?.toMillis?a.requestedAt.toMillis():new Date(a.requestedAt||a.createdAt||0).getTime(),tb=b.requestedAt?.toMillis?b.requestedAt.toMillis():new Date(b.requestedAt||b.createdAt||0).getTime();return tb-ta});
- renderCicilanRequests();
-}
 function renderCicilanRequests(){
- const box=$("cicilanList");
- if(!box)return;
-
+ const card=$("cicilanCard"),box=$("cicilanList");
+ if(!card||!box)return;
  const sel=selectedEmployee();
- if(!sel){
-  $("cicilanCard").style.display="none";
-  box.innerHTML="";
-  return;
- }
-
+ if(!sel){card.style.display="none";box.innerHTML="";return;}
+ const wantedUid=String(sel.uid||"").toLowerCase(),wantedName=String(sel.nama||"").toLowerCase(),wantedKode=String(sel.kode||"").toLowerCase();
  const list=cicilanRequests.filter(r=>{
-  const k=r.karyawan||r.employee||{};
-  const name=typeof k==="string"
-    ?k
-    :String(k?.nama??r.karyawanNama??r.namaKaryawan??r.employeeName??"");
-  const eid=typeof k==="object"
-    ?String(k?.uid??k?.userId??k?.id??"")
-    :String(r.karyawanUid??r.employeeUid??"");
-
-  return (eid && eid===sel.uid)
-      || (!eid && name.trim().toLowerCase()===sel.nama.toLowerCase());
+  if(String(r.status||"pending").toLowerCase()!=="pending")return false;
+  const eid=employeeUid(r).toLowerCase(),ename=employeeName(r).toLowerCase();
+  const ekode=String(r.karyawan?.kode??r.employee?.kode??r.karyawanKode??r.employeeCode??"").trim().toLowerCase();
+  return (eid&&eid===wantedUid)||(!eid&&ename===wantedName)||(!eid&&wantedKode&&ekode===wantedKode)||
+         (String(r.employeeUid||r.karyawanUid||"").toLowerCase()===wantedUid&&wantedUid);
  });
-
- if(!list.length){
-  $("cicilanCard").style.display="block";
-  box.innerHTML='<div class="empty">Tidak ada request cicilan untuk karyawan ini.</div>';
-  return;
- }
-
- $("cicilanCard").style.display="block";
+ if(!list.length){card.style.display="none";box.innerHTML="";return;}
+ card.style.display="block";
  box.innerHTML=list.map(r=>{
-  const m=r.member||{},
-        nota=r.nomorNota||r.orderMemberId||"-",
-        nominal=Number(r.nominal)||0,
-        sebelum=Number(r.tagihanSebelum)||0,
-        jenis=(
-          String(r.modePembayaran||r.jenisPembayaran||"").toLowerCase()==="lunas" ||
-          String(r.jenisPembayaran||"").toLowerCase()==="pelunasan"
-        )?"PELUNASAN":"CICILAN",
-        waktu=r.requestedAt?.toDate
-          ?r.requestedAt.toDate().toLocaleString("id-ID")
-          :(r.requestedAt?new Date(r.requestedAt).toLocaleString("id-ID"):"-");
-
-  return `<div class="order" style="margin-top:10px">
-    <div class="order-head">
-      <div>
-        <div class="order-title">${esc(nota)}</div>
-        <div style="font-size:11px;color:#64748b;margin-top:3px">
-          ${esc(m.nama||r.memberNama||"Member")} • ${jenis} • ${esc(waktu)}
-        </div>
-      </div>
-      <span class="badge">MENUNGGU APPROVAL</span>
-    </div>
-    <div class="order-body">
-      <div class="summary">
-        💳 Pengajuan: <b>${rp(nominal)}</b><br>
-        📌 Tagihan sebelum: <b>${rp(sebelum)}</b><br>
-        📉 Perkiraan sisa setelah disetujui: <b>${rp(Math.max(0,sebelum-nominal))}</b>
-      </div>
-      <div class="meta" style="margin-top:10px">
-        <b>Member:</b> ${esc(m.nama||r.memberNama||"-")}<br>
-        <b>WA:</b> ${esc(m.wa||r.memberWa||"-")}<br>
-        <b>Kode Member:</b> ${esc(m.kode||r.memberId||"-")}
-      </div>
-      <div class="actions">
-        <button class="btn approve" onclick="approveCicilan('${esc(r.id)}')">✅ Setujui Cicilan</button>
-        <button class="btn reject" onclick="rejectCicilan('${esc(r.id)}')">❌ Tolak</button>
-      </div>
-    </div>
+  const m=r.member||{},nominal=num(r.nominal),sebelum=num(r.tagihanSebelum);
+  const jenis=(String(r.modePembayaran||"").toLowerCase()==="lunas"||String(r.jenisPembayaran||"").toLowerCase()==="pelunasan")?"PELUNASAN":"CICILAN";
+  const tanggal=r.requestedAt?.toDate?r.requestedAt.toDate().toLocaleString("id-ID"):String(r.requestedAt||"");
+  return `<div class="order" data-cicilan-id="${esc(r.id)}">
+   <div class="order-head"><div><div class="order-title">${esc(r.nomorNota||r.orderMemberId||r.id)}</div>
+    <div class="meta">👤 Member: <b>${esc(m.nama||r.memberNama||"-")}</b> • ${esc(jenis)}</div></div><span class="badge">MENUNGGU APPROVAL</span></div>
+   <div class="order-body">
+    <div class="meta"><b>Request ID:</b> ${esc(r.id)}<br><b>Nominal pembayaran:</b> ${rp(nominal)}<br><b>Tagihan sebelum:</b> ${rp(sebelum)}${tanggal?`<br><b>Dikirim:</b> ${esc(tanggal)}`:""}</div>
+    <div class="summary">💳 Pembayaran: <b>${rp(nominal)}</b><br>📌 Tagihan setelah approval: <b>${rp(Math.max(0,sebelum-nominal))}</b></div>
+    <div class="actions"><button class="btn approve" onclick="approveCicilan('${esc(r.id)}')">✅ APPROVE PEMBAYARAN</button><button class="btn reject" onclick="rejectCicilan('${esc(r.id)}')">❌ TOLAK</button></div>
+   </div>
   </div>`;
  }).join("");
 }
 
+async function loadCicilanRequests(){
+ cicilanRequests=[];
+ if(!ownerUid)return;
+ const map=new Map();
+ for(const field of ["ownerUid","ownerId"]){
+  try{
+   const snap=await getDocs(query(collection(db,"tabungan_member"),where(field,"==",ownerUid)));
+   snap.forEach(d=>{
+    const x={id:d.id,...d.data()},jenis=String(x.jenis??x.tipe??"").trim().toLowerCase(),own=String(x.ownerUid||x.ownerId||"").trim();
+    if(jenis==="cicilan_tagihan"&&own===ownerUid)map.set(d.id,x);
+   });
+  }catch(e){console.warn("Load cicilan requests "+field,e?.message||e)}
+ }
+ const all=[...map.values()];
+ for(const r of all){
+  try{
+   const omid=String(r.orderMemberId||"").trim();
+   if(!omid)continue;
+   const s=await getDoc(doc(db,"order_member",omid));
+   if(s.exists()){
+    const o=s.data()||{};
+    r.karyawanUid=r.karyawanUid||r.employeeUid||o.employeeUid||o.approvalEmployeeUid||"";
+    r.karyawanNama=r.karyawanNama||r.employeeName||o.employeeName||o.approvalEmployeeName||"";
+    r.karyawan=r.karyawan||o.karyawan||null;
+    r.employee=r.employee||o.employee||null;
+   }
+  }catch(e){console.warn("Load employee cicilan "+r.id,e?.message||e)}
+ }
+ cicilanRequests=all.sort((a,b)=>{
+  const av=a.requestedAt?.toMillis?a.requestedAt.toMillis():new Date(a.requestedAt||a.createdAt||0).getTime();
+  const bv=b.requestedAt?.toMillis?b.requestedAt.toMillis():new Date(b.requestedAt||b.createdAt||0).getTime();
+  return bv-av;
+ });
+ renderCicilanRequests();
+}
+
 window.approveCicilan=async requestId=>{
- const req=cicilanRequests.find(x=>x.id===requestId);if(!req)return;const nominal=Math.max(0,Number(req.nominal)||0);if(!nominal)return msg("Nominal cicilan tidak valid.","err");
- const requestRef=doc(db,"tabungan_member",requestId),orderId=String(req.orderMemberId||"").trim();if(!orderId)return msg("Request tidak memiliki orderMemberId.","err");const orderRef=doc(db,"order_member",orderId);
- try{msg("Memproses approval cicilan...");await runTransaction(db,async tx=>{const rs=await tx.get(requestRef),os=await tx.get(orderRef);if(!rs.exists())throw Error("Request cicilan tidak ditemukan.");if(!os.exists())throw Error("Order member tidak ditemukan.");const d=rs.data()||{},o=os.data()||{};if(String(d.ownerUid||d.ownerId||"")!==ownerUid)throw Error("Request bukan milik Owner ini.");if(String(d.status||"pending").toLowerCase()!=="pending")throw Error("Request sudah diproses.");if(String(o.ownerUid||o.ownerId||"")!==ownerUid)throw Error("Order bukan milik Owner ini.");const total=Number(o.totalBayar??o.total??o.subtotal??0)||0,dibayarLama=Number(o.totalDibayar??o.pembayaran??o.dp??o.uangMuka??0)||0,sisaLama=Math.max(0,total-dibayarLama);if(sisaLama<=0)throw Error("Tagihan order sudah lunas.");if(nominal>sisaLama)throw Error(`Nominal ${rp(nominal)} melebihi sisa tagihan ${rp(sisaLama)}.`);const dibayarBaru=dibayarLama+nominal,sisaBaru=Math.max(0,total-dibayarBaru),lunas=sisaBaru<=0;tx.update(orderRef,{totalDibayar:dibayarBaru,sudahDibayar:dibayarBaru,sisa:sisaBaru,sisaBayar:sisaBaru,piutang:sisaBaru,status:lunas?"lunas":"tagihan",lastPaymentAt:serverTimestamp(),lastPaymentAmount:nominal,updatedAt:serverTimestamp()});tx.update(requestRef,{status:"approved",approvedAt:serverTimestamp(),approvedBy:uid})});msg("Cicilan berhasil disetujui. Sisa tagihan sudah diperbarui.","ok");await loadCicilanRequests()
- }catch(e){console.error(e);msg("Gagal approval cicilan: "+(e?.message||e),"err")}
+ const req=cicilanRequests.find(x=>x.id===requestId);
+ if(!req)return msg("Request cicilan tidak ditemukan.","err");
+ const nominal=Math.floor(num(req.nominal));
+ if(nominal<=0)return msg("Nominal pembayaran tidak valid.","err");
+ if(!confirm(`Setujui pembayaran ${rp(nominal)} untuk nota ${req.nomorNota||req.orderMemberId||requestId}?`))return;
+ try{
+  msg("Memproses approval pembayaran...");
+  const reqRef=doc(db,"tabungan_member",requestId),orderId=String(req.orderMemberId||"").trim();
+  if(!orderId)throw Error("Request tidak memiliki orderMemberId.");
+  const orderRef=doc(db,"order_member",orderId);
+  await runTransaction(db,async tx=>{
+   const rs=await tx.get(reqRef);
+   if(!rs.exists())throw Error("Request cicilan tidak ditemukan di Firebase.");
+   const q=rs.data()||{};
+   if(String(q.ownerUid||q.ownerId||"")!==ownerUid)throw Error("Request bukan milik Owner ini.");
+   if(String(q.status||"pending").toLowerCase()!=="pending")throw Error("Request cicilan sudah diproses.");
+   const os=await tx.get(orderRef);
+   if(!os.exists())throw Error("Order Member tidak ditemukan di Firebase.");
+   const o=os.data()||{};
+   if(String(o.ownerUid||o.ownerId||"")!==ownerUid)throw Error("Order Member bukan milik akun ini.");
+   const total=Math.max(0,num(o.totalBayar??o.total)),current=Math.max(0,num(o.totalDibayar??o.pembayaran??o.dp)),sisa=Math.max(0,total-current);
+   if(sisa<=0)throw Error("Tagihan order ini sudah lunas.");
+   if(nominal>sisa)throw Error(`Pembayaran melebihi sisa tagihan ${rp(sisa)}.`);
+   const baru=current+nominal,baruSisa=Math.max(0,total-baru),st=baruSisa===0?"lunas":"tagihan";
+   const patch={status:st,totalDibayar:baru,sisaBayar:baruSisa,sisa:baruSisa,pembayaranTerakhir:nominal,pembayaranTerakhirAt:serverTimestamp(),updatedAt:serverTimestamp()};
+   if(st==="lunas")patch.sebelumLunas={status:String(o.status||"tagihan"),totalDibayar:current,sisaBayar:sisa,sisa:sisa};
+   tx.update(orderRef,patch);
+   tx.update(reqRef,{status:"approved",approvedAt:serverTimestamp(),approvedBy:uid,tagihanSebelum:sisa,tagihanSesudah:baruSisa,updatedAt:serverTimestamp()});
+  });
+  msg("Pembayaran berhasil di-approve. Sisa tagihan diperbarui.","ok");
+  await loadCicilanRequests();
+ }catch(e){console.error(e);msg("Gagal approval pembayaran: "+(e?.message||e),"err")}
 };
+
 window.rejectCicilan=async requestId=>{
  const req=cicilanRequests.find(x=>x.id===requestId);if(!req)return;const alasan=prompt("Alasan penolakan transfer/cicilan:","Bukti transfer belum sesuai");if(alasan===null)return;
  try{const ref=doc(db,"tabungan_member",requestId);await runTransaction(db,async tx=>{const ss=await tx.get(ref);if(!ss.exists())throw Error("Request tidak ditemukan.");const d=ss.data()||{};if(String(d.ownerUid||d.ownerId||"")!==ownerUid)throw Error("Request bukan milik Owner ini.");if(String(d.status||"pending").toLowerCase()!=="pending")throw Error("Request sudah diproses.");tx.update(ref,{status:"rejected",approvedBy:uid,alasanApproval:alasan})});msg("Request cicilan ditolak. Tagihan tidak berubah.","ok");await loadCicilanRequests()}catch(e){console.error(e);msg("Gagal menolak cicilan: "+(e?.message||e),"err")}
@@ -447,14 +844,98 @@ window.saveAddedProduct=async()=>{
  try{msg("Menyimpan produk tambahan...");const ref=doc(db,"penjualan",id);await runTransaction(db,async tx=>{const snap=await tx.get(ref);if(!snap.exists())throw Error("Pesanan tidak ditemukan.");const d=snap.data()||{};if(String(d.ownerUid||d.ownerId||"")!==ownerUid)throw Error("Pesanan bukan milik akun ini.");if(String(d.status||"menunggu_approval")!=="menunggu_approval")throw Error("Pesanan sudah tidak menunggu approval.");const items=Array.isArray(d.items)?d.items:(Array.isArray(d.produkList)?d.produkList:[]),cash=isCash(d),tab=Number(d.tabunganPerPcs??d.tabunganMember??d.tabunganMemberPerPcs??0)||0,up=Number(d.upPengelolaPerPcs??d.upPengelola??0)||0,hargaDasar=cash?(Number(p.modal)||0):(Number(p.jual)||0),hargaFinal=hargaDasar+tab+up,item={approvalItemId:`ADD-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,tambahanApproval:true,produkId:p.id,nama:stockName(p),kode:stockCode(p),namaProduk:stockName(p),kodeProduk:stockCode(p),supplier:p.supplier||"",qty,jumlah:qty,harga:hargaFinal,hargaJual:hargaFinal,hargaDasar,hargaTempo:Number(p.hargaTempo??p.jual??0)||0,hargaCash:Number(p.hargaCash??p.modal??0)||0,tabunganPerPcs:tab,upPengelolaPerPcs:up,tambahanTabungan:tab*qty,tambahanUpPengelola:up*qty,modalSatuan:Number(p.modal)||0,diskon:0,approvedQty:qty,stokTersedia:stock,sourceIndex:p.sourceIndex,sourceSpreadsheet:p.sourceSpreadsheet};tx.update(ref,{items:[...items,item],status:"menunggu_approval",approvalStatus:"menunggu_approval",updatedAt:serverTimestamp()})});closeAddProduct();await load();msg("Produk baru berhasil ditambahkan. Stok belum dikurangi.","ok")}catch(e){console.error(e);msg("Gagal menambah produk: "+(e.message||e),"err")}
 };
 
+function waBreakdown(r,items){
+ const list=(Array.isArray(items)?items:[]).map(x=>{
+  const qty=Math.max(0,num(x?.qty??x?.approvedQty??x?.jumlah??1));
+  const tab=firstPositive(x?.tabunganPerPcs,x?.tabungan,r?.tabunganPerPcs,r?.tabunganMember);
+  const up=firstPositive(x?.upPengelolaPerPcs,x?.upPengelola,r?.upPengelolaPerPcs,r?.upPengelola);
+  let base=firstPositive(x?.hargaDasar,x?.hargaAwal);
+  const harga=Number(x?.harga??x?.hargaJual??0)||0;
+  if(!base && harga>0)base=Math.max(0,harga-tab-up);
+  const diskon=Math.min(Math.max(0,num(x?.diskon??x?.discount)),Math.max(0,base*qty));
+  const nilai=Math.max(0,base*qty-diskon);
+  const tabTotal=tab*qty;
+  const upTotal=up*qty;
+  return {...x,qty,base,tab,up,diskon,nilai,tabTotal,upTotal,itemTotal:nilai+tabTotal+upTotal};
+ });
+ const nilaiBarang=list.reduce((a,x)=>a+x.nilai,0);
+ const tabungan=list.reduce((a,x)=>a+x.tabTotal,0);
+ const pengelola=list.reduce((a,x)=>a+x.upTotal,0);
+ const kas=firstPositive(r?.kasBulanan,r?.uangKasBulanan,r?.kasBulananMember,r?.uangKas);
+ const total=nilaiBarang+tabungan+pengelola+kas;
+ const dp=Math.max(0,num(r?.dp??r?.uangMuka));
+ const cash=isCash(r);
+ const pembayaran=Math.max(0,num(r?.totalDibayar??r?.pembayaran));
+ const sisa=cash?0:Math.max(0,total-Math.max(dp,pembayaran));
+ return {list,nilaiBarang,tabungan,pengelola,kas,total,dp,pembayaran,sisa,cash};
+}
+
 function buildMessage(r,items,statusText){
- const m=member(r),nama=profile.namaKonter||profile.namaToko||"FIXZY",nota=r.nomorNota||r.id;let text=`Halo Kak ${m.nama||""} 👋\n\n`;
- if(statusText==="approved"){text+=`Pesanan member *${nota}* sudah kami cek.\n\n✅ Produk yang tersedia dan disetujui:\n`;items.forEach(x=>text+=`• ${x.nama} x${x.qty} — ${rp(x.total||x.harga*x.qty)}\n`);text+=`\n💰 Total: ${rp(r.total)}\n`;if(isCash(r))text+=`💵 CASH / TUNAI — LUNAS\n📌 Tagihan: Rp 0\n\n`;else text+=`💵 DP: ${rp(r.dp)}\n📌 Sisa: ${rp(r.sisa)}\n📅 Jatuh tempo: ${r.jatuhTempo||"-"}\n\n`;text+=`Pesanan yang sudah disetujui akan diproses di *Data Order Member*.\n\nTerima kasih 🙏\n*${nama}*`;
- }else{text+=`Pesanan member *${nota}* sudah kami cek.\n\n❌ DI BATALKAN\nAlasan pembatalan: ${r.alasanApproval||""}\n\nSilakan isi kembali keranjag order untuk pilihan produk pengganti.\n\nTerima kasih 🙏\n*${nama}*`;}
+ const m=member(r),nama=profile.namaKonter||profile.namaToko||"FIXZY",nota=r.nomorNota||r.id;
+ const b=waBreakdown(r,items);
+ let text=`Halo Kak ${m.nama||""} 👋\n\n`;
+ if(statusText==="approved"){
+  text+=`Pesanan member *${nota}* sudah kami cek.\n\n✅ *RINCIAN PESANAN*\n━━━━━━━━━━━━━━━━━━\n`;
+  b.list.forEach((x,i)=>{
+   text+=`${i+1}. *${x.nama}*\n`;
+   text+=`   Kode: ${x.kode||"-"}\n`;
+   text+=`   Qty: *${x.qty} pcs*\n`;
+   text+=`   Harga awal: ${rp(x.base)}/pcs\n`;
+   text+=`   Nilai barang: ${rp(x.nilai)}\n`;
+   text+=`   Tabungan: ${rp(x.tab)} × ${x.qty} = ${rp(x.tabTotal)}\n`;
+   text+=`   Pengelola: ${rp(x.up)} × ${x.qty} = ${rp(x.upTotal)}\n`;
+   if(x.diskon>0)text+=`   Diskon barang: -${rp(x.diskon)}\n`;
+   text+=`   Jumlah produk: *${rp(x.itemTotal)}*\n\n`;
+  });
+  text+=`━━━━━━━━━━━━━━━━━━\n📊 *RINGKASAN BIAYA*\n`;
+  text+=`Nilai barang: *${rp(b.nilaiBarang)}*\n`;
+  text+=`Tabungan member: *${rp(b.tabungan)}*\n`;
+  text+=`UP pengelola: *${rp(b.pengelola)}*\n`;
+  text+=`Uang kas: *${rp(b.kas)}*\n`;
+  text+=`💰 *TOTAL: ${rp(b.total)}*\n`;
+  if(b.cash){
+   text+=`💵 Pembayaran: *${rp(b.total)}*\n📌 Sisa tagihan: *Rp 0*\n`;
+  }else{
+   const bayar=Math.max(b.dp,b.pembayaran);
+   text+=`💵 Pembayaran/DP: *${rp(bayar)}*\n📌 Sisa tagihan: *${rp(Math.max(0,b.total-bayar))}*\n📅 Jatuh tempo: *${r.jatuhTempo||r.tanggalJatuhTempo||"-"}*\n`;
+  }
+  text+=`━━━━━━━━━━━━━━━━━━\n\nPesanan yang sudah disetujui akan diproses di *Data Order Member*.\n\nTerima kasih 🙏\n*${nama}*`;
+ }else{
+  text+=`Pesanan member *${nota}* sudah kami cek.\n\n❌ *DI BATALKAN*\nAlasan pembatalan: ${r.alasanApproval||""}\n\nSilakan isi kembali keranjang order untuk pilihan produk pengganti.\n\nTerima kasih 🙏\n*${nama}*`;
+ }
  return text;
 }
 function sendWAData(r,statusText){const m=member(r),url=`https://wa.me/${waNum(m.wa)}?text=${encodeURIComponent(buildMessage(r,r.items||[],statusText))}`;window.open(url,"_blank")}
-window.sendWA=id=>{const r=rows.find(x=>x.id===id);if(!r)return;const st=status(r);if(st==="menunggu_approval"){const m=member(r),nama=profile.namaKonter||profile.namaToko||"FIXZY",nota=r.nomorNota||r.id,items=normalizeItems(r);let total=0,totalQty=0;items.forEach(x=>{const qty=Number(x.qty)||0,harga=Number(x.harga)||0,diskon=Math.min(Number(x.diskon)||0,harga*qty),jumlah=harga*qty-diskon;totalQty+=qty;total+=jumlah});let text=`Halo Kak ${m.nama||""} 👋\n\n📋 *KONFIRMASI PESANAN*\n━━━━━━━━━━━━━━━━━━\n🧾 No. Nota: *${nota}*\n👤 Member: *${m.nama||"-"}*\n━━━━━━━━━━━━━━━━━━\n\n📦 *RINCIAN ORDERAN*\n\n`;items.forEach((x,i)=>{const qty=Number(x.qty)||0,harga=Number(x.harga)||0,diskon=Math.min(Number(x.diskon)||0,harga*qty),jumlah=harga*qty-diskon;text+=`${i+1}. *${x.nama}*\n   Kode: ${x.kode||"-"}\n   Qty: *${qty} pcs*\n   Harga: ${rp(harga)}/pcs\n   ${diskon>0?`Diskon: -${rp(diskon)}\n   `:""}Jumlah: *${rp(jumlah)}*\n\n`});text+=`━━━━━━━━━━━━━━━━━━\n📊 *RINGKASAN*\nTotal Produk: *${totalQty} pcs*\n💰 Total Pesanan: *${rp(total)}*\n━━━━━━━━━━━━━━━━━━\n\n⚠️ *MOHON CEK ULANG ORDERAN ANDA*\n\nPastikan kembali produk, kode, jumlah, harga dan total pesanan sudah benar.\n\n📦 Setelah memastikan pesanan benar, pesanan akan kami *APPROVAL* dan diteruskan ke pemasok.\n\nTerima kasih 🙏\n*${nama}*`;window.open(`https://wa.me/${waNum(m.wa)}?text=${encodeURIComponent(text)}`,"_blank");return}sendWAData(r,st==="approved"?"approved":"rejected")};
+window.sendWA=id=>{
+ const r=rows.find(x=>x.id===id);if(!r)return;
+ const st=status(r);
+ if(st==="menunggu_approval"){
+  const m=member(r),nama=profile.namaKonter||profile.namaToko||"FIXZY",nota=r.nomorNota||r.id,items=normalizeItems(r),b=waBreakdown(r,items);
+  let text=`Halo Kak ${m.nama||""} 👋\n\n📋 *KONFIRMASI PESANAN*\n━━━━━━━━━━━━━━━━━━\n🧾 No. Nota: *${nota}*\n👤 Member: *${m.nama||"-"}*\n━━━━━━━━━━━━━━━━━━\n\n📦 *RINCIAN ORDERAN*\n\n`;
+  b.list.forEach((x,i)=>{
+   text+=`${i+1}. *${x.nama}*\n`;
+   text+=`   Kode: ${x.kode||"-"}\n`;
+   text+=`   Qty: *${x.qty} pcs*\n`;
+   text+=`   Harga awal: ${rp(x.base)}/pcs\n`;
+   text+=`   Nilai barang: ${rp(x.nilai)}\n`;
+   text+=`   Tabungan: ${rp(x.tab)} × ${x.qty} = ${rp(x.tabTotal)}\n`;
+   text+=`   Pengelola: ${rp(x.up)} × ${x.qty} = ${rp(x.upTotal)}\n`;
+   if(x.diskon>0)text+=`   Diskon barang: -${rp(x.diskon)}\n`;
+   text+=`   Jumlah produk: *${rp(x.itemTotal)}*\n\n`;
+  });
+  text+=`━━━━━━━━━━━━━━━━━━\n📊 *RINGKASAN BIAYA*\n`;
+  text+=`Total Produk: *${b.list.reduce((a,x)=>a+x.qty,0)} pcs*\n`;
+  text+=`Nilai barang: *${rp(b.nilaiBarang)}*\n`;
+  text+=`Tabungan member: *${rp(b.tabungan)}*\n`;
+  text+=`UP pengelola: *${rp(b.pengelola)}*\n`;
+  text+=`Uang kas: *${rp(b.kas)}*\n`;
+  text+=`💰 *TOTAL PESANAN: ${rp(b.total)}*\n`;
+  text+=`━━━━━━━━━━━━━━━━━━\n\n⚠️ *MOHON CEK ULANG ORDERAN ANDA*\n\nPastikan kembali produk, kode, jumlah, harga awal, tabungan, pengelola, uang kas dan total pesanan sudah benar.\n\n📦 Setelah memastikan pesanan benar, pesanan akan kami *APPROVAL* dan diteruskan ke pemasok.\n\nTerima kasih 🙏\n*${nama}*`;
+  window.open(`https://wa.me/${waNum(m.wa)}?text=${encodeURIComponent(text)}`,"_blank");
+  return;
+ }
+ sendWAData(r,st==="approved"?"approved":"rejected");
+};
 
 $("search").addEventListener("change",()=>{render();renderApprovedHistory();renderCicilanRequests();});
 $("list").addEventListener("input",e=>{const order=e.target.closest(".order");if(!order)return;if(e.target.classList.contains("product-search"))searchReplacementProducts(e.target);if(e.target.classList.contains("approved")||e.target.classList.contains("price")||e.target.classList.contains("tempo-edit")||e.target.classList.contains("due-edit"))recalcOrder(order.dataset.id)});
